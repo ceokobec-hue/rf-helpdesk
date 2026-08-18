@@ -1,0 +1,278 @@
+/* ═══════════════════════════════════════════════════════════════
+   RF Helpdesk — 디자인 시스템
+   성격: 계측기 판넬. 숫자가 주인공이고 장식은 없다.
+   색은 이 부품의 재료에서 가져왔다 — 황동 단자(brass), 계측 잉크(signal).
+   ⚠ 웹폰트를 외부에서 불러오지 않는다. 사내 서버는 인터넷이 끊길 수 있고
+     오프라인 동작이 검수 항목이다. 시스템 폰트로만 조판한다.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root{
+  --paper:#F7F8F6; --paper-2:#EFF2EF; --panel:#FFFFFF;
+  --ink:#15201C; --ink-2:#4A5B54; --ink-3:#7B8B84;
+  --rule:#CBD4CF; --rule-2:#E3E9E5;
+  --brass:#9C6318;            /* 채택값 · 선택 — 진공 커패시터 단자 재질 */
+  --brass-bg:#F6EDDF;
+  --signal:#1A5A87;           /* 측정값 · 링크 */
+  --signal-bg:#E7F0F6;
+  --alarm:#A81E17;            /* 정격 미달 · 불일치 */
+  --alarm-bg:#FBEAE8;
+  --ok:#1F6B4A; --ok-bg:#E6F2EC;
+  --warn:#8A6100; --warn-bg:#FBF1DA;
+
+  --mono: ui-monospace, "SF Mono", "SFMono-Regular", "Cascadia Mono", "D2Coding",
+          "Consolas", "Liberation Mono", Menlo, monospace;
+  --sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+          "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+
+  --r:3px;                    /* 계측기 = 모서리를 거의 안 굴린다 */
+  --gap:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12191A; --paper-2:#182122; --panel:#1B2426;
+    --ink:#E4EBE8; --ink-2:#A5B4AF; --ink-3:#7B8B86;
+    --rule:#2E3B3D; --rule-2:#243032;
+    --brass:#D9A05B; --brass-bg:#2E2415;
+    --signal:#71B5DE; --signal-bg:#12262F;
+    --alarm:#F08279; --alarm-bg:#2E1715;
+    --ok:#6BC59A; --ok-bg:#12261D;
+    --warn:#D9A94E; --warn-bg:#2A2110;
+  }
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:14px; line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--signal); text-decoration:none; border-bottom:1px solid color-mix(in srgb,var(--signal) 35%,transparent)}
+a:hover{border-bottom-color:var(--signal)}
+:focus-visible{outline:2px solid var(--brass); outline-offset:2px}
+
+/* ── 상단 레일 ────────────────────────────────────────────── */
+.rail{
+  display:flex; align-items:center; gap:18px;
+  padding:0 18px; height:52px;
+  background:var(--panel); border-bottom:1px solid var(--rule);
+  position:sticky; top:0; z-index:40;
+}
+.rail__mark{
+  font-family:var(--mono); font-size:12px; font-weight:700; letter-spacing:.16em;
+  color:var(--ink); white-space:nowrap;
+}
+.rail__mark b{color:var(--brass)}
+.rail nav{display:flex; gap:2px}
+.rail nav a{
+  font-size:13px; padding:6px 12px; border-radius:var(--r); border:0;
+  color:var(--ink-2);
+}
+.rail nav a:hover{background:var(--paper-2); color:var(--ink)}
+.rail nav a[aria-current]{background:var(--ink); color:var(--paper)}
+.rail__meta{
+  margin-left:auto; font-family:var(--mono); font-size:11px;
+  color:var(--ink-3); text-align:right; line-height:1.35;
+}
+
+/* ── 레이아웃 ─────────────────────────────────────────────── */
+.shell{display:grid; grid-template-columns:268px minmax(0,1fr); align-items:start}
+@media (max-width:900px){ .shell{grid-template-columns:1fr} }
+
+.filters{
+  position:sticky; top:52px; align-self:start;
+  max-height:calc(100vh - 52px); overflow:auto;
+  padding:16px; border-right:1px solid var(--rule); background:var(--panel);
+}
+@media (max-width:900px){ .filters{position:static; max-height:none; border-right:0; border-bottom:1px solid var(--rule)} }
+.main{padding:16px 18px 60px; min-width:0}
+
+/* ── 폼 ───────────────────────────────────────────────────── */
+.f{margin-bottom:16px}
+.f__label{
+  font-family:var(--mono); font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ink-3); margin-bottom:5px;
+}
+input[type=text],input[type=number],select{
+  width:100%; padding:7px 9px; font-size:13px; font-family:var(--sans);
+  color:var(--ink); background:var(--paper); border:1px solid var(--rule);
+  border-radius:var(--r);
+}
+input[type=number]{font-family:var(--mono)}
+input:focus,select:focus{border-color:var(--brass); outline:none; box-shadow:0 0 0 2px var(--brass-bg)}
+.f__row{display:grid; grid-template-columns:1fr 12px 1fr; align-items:center; gap:6px}
+.f__row span{text-align:center; color:var(--ink-3); font-family:var(--mono)}
+.chips{display:flex; flex-wrap:wrap; gap:4px}
+.chip{
+  font-family:var(--mono); font-size:11px; padding:4px 9px; cursor:pointer;
+  border:1px solid var(--rule); border-radius:var(--r);
+  background:var(--paper); color:var(--ink-2); user-select:none;
+}
+.chip:hover{border-color:var(--ink-3)}
+.chip[aria-pressed=true]{background:var(--ink); border-color:var(--ink); color:var(--paper)}
+
+/* ── 버튼 (쓰기 4종 세트용 상태 포함) ────────────────────── */
+.btn{
+  font-family:var(--sans); font-size:13px; padding:7px 14px; cursor:pointer;
+  background:var(--ink); color:var(--paper); border:1px solid var(--ink);
+  border-radius:var(--r);
+}
+.btn--ghost{background:transparent; color:var(--ink-2); border-color:var(--rule)}
+.btn--ghost:hover{border-color:var(--ink-3); color:var(--ink)}
+.btn[disabled],.btn[aria-busy=true]{opacity:.55; cursor:not-allowed}
+
+/* ── 결과 헤더 ───────────────────────────────────────────── */
+.count{
+  display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+  padding-bottom:10px; margin-bottom:12px; border-bottom:1px solid var(--rule);
+}
+.count b{font-family:var(--mono); font-size:22px; font-weight:600; letter-spacing:-.02em}
+.count span{font-size:12px; color:var(--ink-3)}
+
+/* ── 데이터 표 ───────────────────────────────────────────── */
+.tw{overflow-x:auto; border:1px solid var(--rule); border-radius:var(--r); background:var(--panel)}
+table{border-collapse:collapse; width:100%; font-size:12.5px}
+thead th{
+  font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:500; text-align:left;
+  padding:8px 10px; border-bottom:1px solid var(--rule); white-space:nowrap;
+  background:var(--paper-2); position:sticky; top:0;
+}
+tbody td{padding:7px 10px; border-bottom:1px solid var(--rule-2); vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--paper-2)}
+tbody tr[aria-selected=true]{background:var(--brass-bg)}
+tbody tr[aria-selected=true] td:first-child{box-shadow:inset 3px 0 0 var(--brass)}
+.num{font-family:var(--mono); text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums}
+.pn{font-family:var(--mono); font-weight:600; white-space:nowrap; letter-spacing:-.01em}
+.u{color:var(--ink-3); font-size:.85em; margin-left:1px}
+
+/* ── 뱃지 ─────────────────────────────────────────────────── */
+.b{
+  display:inline-block; font-family:var(--mono); font-size:10px; font-weight:600;
+  padding:2px 6px; border-radius:2px; letter-spacing:.06em; white-space:nowrap;
+}
+.b--vvc{background:var(--signal-bg); color:var(--signal)}
+.b--vfc{background:var(--paper-2); color:var(--ink-2); border:1px solid var(--rule)}
+.b--warn{background:var(--warn-bg); color:var(--warn)}
+.b--alarm{background:var(--alarm-bg); color:var(--alarm)}
+.b--ok{background:var(--ok-bg); color:var(--ok)}
+.b--water{background:var(--signal-bg); color:var(--signal); border:1px solid color-mix(in srgb,var(--signal) 30%,transparent)}
+
+.grade{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:19px; height:19px; border-radius:2px;
+  font-family:var(--mono); font-size:11px; font-weight:700;
+}
+.grade--A{background:var(--ok); color:#fff}
+.grade--B{background:var(--warn); color:#fff}
+.grade--C{background:var(--rule); color:var(--ink-2)}
+
+/* ═══ 시그니처: 출처 이중 표시 ═══════════════════════════════
+   목록 JSON과 데이터시트 PDF가 어긋난 값(전수 22건)을 숨기지 않고
+   계기판처럼 두 눈금으로 보여준다. 그 사이는 도면 빗금으로 채우고,
+   실제로 채택한 보수적 값에 황동 마커를 세운다.
+   이 도구가 존재하는 이유가 바로 이 갈라짐이다. */
+.dual{margin:2px 0 0}
+.dual__bar{
+  position:relative; height:16px; margin:3px 0 4px;
+  background:var(--paper-2); border:1px solid var(--rule-2); border-radius:2px;
+}
+.dual__span{
+  position:absolute; top:0; bottom:0; left:var(--a); right:var(--b);
+  background:repeating-linear-gradient(-45deg,
+    color-mix(in srgb,var(--alarm) 22%,transparent) 0 3px,
+    transparent 3px 6px);
+  border-left:1px solid color-mix(in srgb,var(--alarm) 50%,transparent);
+  border-right:1px solid color-mix(in srgb,var(--alarm) 50%,transparent);
+}
+.dual__pick{
+  position:absolute; top:-3px; bottom:-3px; left:var(--p); width:2px;
+  background:var(--brass);
+}
+.dual__pick::after{
+  content:''; position:absolute; top:-4px; left:-3px;
+  border:4px solid transparent; border-top-color:var(--brass);
+}
+.dual__nums{
+  font-family:var(--mono); font-size:11px; color:var(--ink-2);
+  display:flex; gap:10px; flex-wrap:wrap; align-items:baseline;
+}
+.dual__nums b{color:var(--ink); font-weight:600}
+.dual__nums .adopt{color:var(--brass); font-weight:700}
+.dual__nums .src{color:var(--ink-3); font-size:10px; letter-spacing:.06em}
+
+/* ── 상세 패널 ───────────────────────────────────────────── */
+.detail{
+  background:var(--panel); border:1px solid var(--rule); border-radius:var(--r);
+  padding:16px; margin-bottom:16px;
+}
+.detail__head{
+  display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;
+  padding-bottom:12px; margin-bottom:14px; border-bottom:1px solid var(--rule);
+}
+.detail__pn{font-family:var(--mono); font-size:20px; font-weight:700; letter-spacing:-.02em}
+.detail__sub{font-size:12px; color:var(--ink-3); font-family:var(--mono)}
+.detail__acts{margin-left:auto; display:flex; gap:6px; flex-wrap:wrap}
+
+.grid3{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:20px}
+.spec{margin:0}
+.spec dt{
+  font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--ink-3); margin-top:11px;
+}
+.spec dd{margin:1px 0 0; font-family:var(--mono); font-size:14px; font-weight:600}
+.spec dd small{font-weight:400; color:var(--ink-3); font-size:11px; margin-left:3px}
+
+.sect__t{
+  font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-2); padding-bottom:6px; margin:22px 0 10px;
+  border-bottom:1px solid var(--rule);
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+}
+
+/* ── 알림 박스 ───────────────────────────────────────────── */
+.note{
+  padding:9px 12px; border-radius:var(--r); font-size:12.5px; line-height:1.5;
+  border-left:3px solid var(--ink-3); background:var(--paper-2); margin:10px 0;
+}
+.note--alarm{border-left-color:var(--alarm); background:var(--alarm-bg)}
+.note--warn{border-left-color:var(--warn); background:var(--warn-bg)}
+.note--brass{border-left-color:var(--brass); background:var(--brass-bg)}
+.note b{font-weight:700}
+.note code{font-family:var(--mono); font-size:11.5px}
+
+/* ── 출처 각주 ───────────────────────────────────────────── */
+.src-foot{
+  margin-top:26px; padding-top:12px; border-top:1px solid var(--rule);
+  font-size:11px; color:var(--ink-3); line-height:1.65;
+}
+.src-foot h4{
+  font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+  margin:0 0 6px; color:var(--ink-2); font-weight:500;
+}
+.src-foot ol{margin:0; padding-left:20px}
+.src-foot li{margin-bottom:3px}
+.src-foot .mono{font-family:var(--mono)}
+
+/* ── 토스트 (쓰기 완료/실패 알림) ───────────────────────── */
+#toasts{position:fixed; right:16px; bottom:16px; z-index:99; display:flex; flex-direction:column; gap:8px}
+.toast{
+  padding:9px 14px; border-radius:var(--r); font-size:13px; max-width:340px;
+  background:var(--ink); color:var(--paper); box-shadow:0 6px 20px rgba(0,0,0,.18);
+  animation:tin .18s ease-out;
+}
+.toast--err{background:var(--alarm); color:#fff}
+.toast--ok{background:var(--ok); color:#fff}
+@keyframes tin{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+@media (prefers-reduced-motion:reduce){ .toast{animation:none} }
+
+.empty{padding:44px 16px; text-align:center; color:var(--ink-3); font-size:13px}
+.empty b{display:block; color:var(--ink-2); font-size:14px; margin-bottom:4px}
+
+/* 섹션 제목 뒤 설명 — 제목은 라벨, 설명은 문장. 서체를 나눈다. */
+.sect__desc{
+  font-family:var(--sans); font-size:11.5px; font-weight:400;
+  letter-spacing:0; text-transform:none; color:var(--ink-3);
+}

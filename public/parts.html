@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>부품 조회 · RF Helpdesk</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { $, el, n, api, esc, dateKo, dualReadout, basisTag, renderRail, toast } from './app.js';
+
+const app = $('#app');
+let DB = { meta: null, models: [] };
+let sel = null, sortKey = 'id', sortDir = 1;
+
+const F = {                                   // 필터 상태
+  q: '', kind: new Set(), series: new Set(),
+  capMin: null, capMax: null, vMin: null, iMin: null, dia: null,
+  onlyFlagged: false,
+};
+
+
+function seriesList() {
+  const s = new Map();
+  for (const m of DB.models) {
+    if (F.kind.size && !F.kind.has(m.kind)) continue;
+    s.set(m.series, (s.get(m.series) ?? 0) + 1);
+  }
+  return [...s.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function filtered() {
+  const q = F.q.trim().toUpperCase();
+  return DB.models.filter(m => {
+    if (q && !(m.id.toUpperCase().includes(q) || m.type.toUpperCase().includes(q))) return false;
+    if (F.kind.size && !F.kind.has(m.kind)) return false;
+    if (F.series.size && !F.series.has(m.series)) return false;
+    // 용량: 이 구간을 낼 수 있는 모델 (범위가 구간을 덮는가)
+    if (F.capMin != null && !(m.cap_min != null && m.cap_min <= F.capMin)) return false;
+    if (F.capMax != null && !(m.cap_max != null && m.cap_max >= F.capMax)) return false;
+    if (F.vMin != null && !(m.v_pk != null && m.v_pk >= F.vMin)) return false;
+    if (F.iMin != null && !(m.i_max != null && m.i_max >= F.iMin)) return false;
+    if (F.dia != null && !(m.dia != null && Math.abs(m.dia - F.dia) <= 0.6)) return false;
+    if (F.onlyFlagged && !(m.disagree > 0 || m.flags.length)) return false;
+    return true;
+  }).sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (x == null) return 1; if (y == null) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sortDir;
+  });
+}
+
+// ── 렌더 ──────────────────────────────────────────────────────
+function render() {
+  const rows = filtered();
+  const s = DB.meta?.summary ?? {};
+  app.replaceChildren(
+    renderRail('parts.html',
+      `수집 ${dateKo(DB.meta?.generated_at)} · 모델 ${s.total ?? '—'}<br>`
+      + `<span style="color:var(--alarm)">출처 불일치 ${s.mismatch ?? 0}</span> · 데이터시트 ${s.extracted ?? 0}`),
+    el('div', { class: 'shell' }, renderFilters(), renderMain(rows)));
+  if (sel) $('#detail')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function renderFilters() {
+  const box = el('aside', { class: 'filters' });
+  const field = (label, ...kids) => el('div', { class: 'f' },
+    el('div', { class: 'f__label' }, label), ...kids);
+  const numIn = (key, ph) => el('input', {
+    type: 'number', placeholder: ph, value: F[key] ?? '',
+    oninput: e => { F[key] = e.target.value === '' ? null : Number(e.target.value); redrawMain(); },
+  });
+  const chips = (items, set, keyOf = x => x) => el('div', { class: 'chips' },
+    items.map(it => {
+      const k = keyOf(it), on = set.has(k);
+      return el('button', {
+        class: 'chip', type: 'button', 'aria-pressed': on,
+        onclick: () => { on ? set.delete(k) : set.add(k); render(); },
+      }, Array.isArray(it) ? `${it[0]} ${it[1]}` : it);
+    }));
+
+  box.append(
+    field('품번 · 타입 검색',
+      el('input', { type: 'text', placeholder: '예: SCV-540P110W / VP110', value: F.q,
+        oninput: e => { F.q = e.target.value; redrawMain(); } })),
+    field('종류', chips(['VVC', 'VFC'], F.kind)),
+    field('시리즈', chips(seriesList(), F.series, x => x[0])),
+    field('필요 용량 구간 (pF)', el('div', { class: 'f__row' },
+      numIn('capMin', '하한'), el('span', {}, '~'), numIn('capMax', '상한'))),
+    el('div', { class: 'note', style: 'font-size:11.5px;padding:7px 10px;margin:-8px 0 16px',
+      html: '구간을 <b>덮는</b> 모델만 남깁니다. 매처가 실제 쓰는 구간을 넣으세요.' }),
+    field('내전압 이상 (kVp)', numIn('vMin', '예: 5')),
+    field('최대전류 이상 (Arms)', numIn('iMin', '예: 170')),
+    field('외경 (mm)', numIn('dia', '예: 110')),
+    field('표시', el('label', { style: 'display:flex;gap:7px;align-items:center;font-size:12.5px;cursor:pointer' },
+      el('input', { type: 'checkbox', checked: F.onlyFlagged,
+        onchange: e => { F.onlyFlagged = e.target.checked; redrawMain(); } }),
+      '출처 불일치·특이사항만')),
+    el('button', { class: 'btn btn--ghost', style: 'width:100%',
+      onclick: () => { Object.assign(F, { q: '', capMin: null, capMax: null, vMin: null, iMin: null, dia: null, onlyFlagged: false });
+        F.kind.clear(); F.series.clear(); sel = null; render(); } }, '조건 지우기'));
+  return box;
+}
+
+function redrawMain() {                        // 필터 입력 중 포커스 유지
+  const rows = filtered();
+  $('#main')?.replaceWith(renderMain(rows));
+}
+
+function renderMain(rows) {
+  const main = el('main', { class: 'main', id: 'main' });
+  main.append(el('div', { class: 'count' },
+    el('b', {}, String(rows.length)),
+    el('span', {}, `개 모델 · 전체 ${DB.models.length}개 중`)));
+  if (sel) main.append(renderDetail(sel));
+  main.append(rows.length ? renderTable(rows)
+    : el('div', { class: 'empty', html: '<b>조건에 맞는 모델이 없습니다</b>조건을 넓혀 보세요.' }));
+  main.append(footNote());
+  return main;
+}
+
+const COLS = [
+  ['id', '품번'], ['type', '타입'], ['series', '시리즈'],
+  ['cap_min', '용량 하한'], ['cap_max', '용량 상한'],
+  ['v_rf', 'RF전압'], ['v_pk', '내전압'], ['i_max', '최대전류'],
+  ['dia', '외경'], ['turns', '튜너회전'],
+];
+
+function renderTable(rows) {
+  const head = el('tr', {}, COLS.map(([k, t]) =>
+    el('th', { onclick: () => { sortDir = sortKey === k ? -sortDir : 1; sortKey = k; redrawMain(); },
+      style: 'cursor:pointer', title: '정렬' },
+      t + (sortKey === k ? (sortDir > 0 ? ' ↑' : ' ↓') : ''))).concat(el('th', {}, '표시')));
+
+  const body = rows.slice(0, 400).map(m => el('tr', {
+    'aria-selected': sel?.id === m.id, onclick: () => openDetail(m.id),
+  },
+    el('td', { class: 'pn' }, m.id),
+    el('td', { class: 'num', style: 'text-align:left' }, m.type),
+    el('td', { style: 'color:var(--ink-3);font-size:11.5px' }, m.series),
+    el('td', { class: 'num', html: n(m.cap_min, 'pF') }),
+    el('td', { class: 'num', html: n(m.cap_max, 'pF') }),
+    el('td', { class: 'num', html: n(m.v_rf, 'kVp') }),
+    el('td', { class: 'num', html: n(m.v_pk, 'kVp') }),
+    el('td', { class: 'num', html: n(m.i_max, 'A') }),
+    el('td', { class: 'num', html: n(m.dia, 'mm') }),
+    el('td', { class: 'num', html: n(m.turns, 'T') }),
+    el('td', { html: [
+      `<span class="b b--${m.kind.toLowerCase()}">${m.kind}</span>`,
+      m.cooling === 'water' ? ' <span class="b b--water">수랭</span>' : '',
+      m.disagree ? ` <span class="b b--alarm" title="목록과 데이터시트 값이 다릅니다">불일치 ${m.disagree}</span>` : '',
+      m.flags.some(f => f.startsWith('partno_mismatch')) ? ' <span class="b b--alarm">품번 불일치</span>' : '',
+      m.flags.includes('no_datasheet') ? ' <span class="b b--warn">시트 없음</span>' : '',
+    ].join('') })));
+
+  return el('div', {},
+    el('div', { class: 'tw' }, el('table', {}, el('thead', {}, head), el('tbody', {}, body))),
+    rows.length > 400 ? el('div', { class: 'note note--warn',
+      html: `표에는 상위 400개만 그렸습니다 (조건 일치 <b>${rows.length}</b>개). 조건을 좁혀 주세요.` }) : null);
+}
+
+// ── 상세 ──────────────────────────────────────────────────────
+async function openDetail(id) {
+  try {
+    sel = await api(`/api/model/${encodeURIComponent(id)}`);
+    sel._subs = null;
+    render();
+  } catch (e) { toast(`상세를 불러오지 못했습니다 — ${e.message}`, 'err'); }
+}
+
+const sv = (m, k) => m.effective?.[k]?.value ?? null;
+const sb = (m, k) => m.effective?.[k]?.basis ?? 'none';
+
+function specRow(label, value, basis) {
+  return [el('dt', {}, label),
+          el('dd', { html: value + (basis === 'conservative' ? ' ' + basisTag(basis) : '') })];
+}
+
+function renderDetail(m) {
+  const s = m.spec ?? {};
+  const box = el('section', { class: 'detail', id: 'detail' });
+
+  box.append(el('div', { class: 'detail__head' },
+    el('div', {},
+      el('div', { class: 'detail__pn' }, m.id),
+      el('div', { class: 'detail__sub', html:
+        `${esc(m.type)} · ${esc(m.series)} · ${m.kind === 'VVC' ? '가변형' : '고정형'}`
+        + (m.type_label ? ` · ${esc(m.type_label)}` : '') })),
+    el('div', { class: 'detail__acts' },
+      m.pdf ? el('a', { class: 'btn btn--ghost', href: `/${m.pdf}`, target: '_blank', rel: 'noopener' }, '데이터시트 원문') : null,
+      el('a', { class: 'btn btn--ghost', href: m.official_page, target: '_blank', rel: 'noopener' }, '제조사 페이지'),
+      m.kind === 'VVC' && s.tuner_turns
+        ? el('a', { class: 'btn', href: `calc.html?model=${encodeURIComponent(m.id)}` }, '계산기로 보내기') : null,
+      el('button', { class: 'btn btn--ghost', onclick: () => { sel = null; render(); } }, '닫기'))));
+
+  // 품번 불일치는 스펙 차이보다 심각 — 맨 위에 띄운다
+  const pnBad = (m.flags ?? []).find(f => f.startsWith('partno_mismatch:'));
+  if (pnBad) box.append(el('div', { class: 'note note--alarm', html:
+    `<b>목록이 다른 품번의 데이터시트를 가리키고 있습니다.</b> 목록 품번 <code>${esc(m.id)}</code> ↔ `
+    + `데이터시트 표지 <code>${esc(m.pdf_part_no)}</code>. 아래 스펙은 표지 품번 기준입니다. `
+    + `<b>제조사 확인 없이 인용하지 마십시오.</b>` }));
+
+  const cap = s.capacitance_pf;
+  const capTxt = !cap ? '—'
+    : cap.kind === 'range' ? `${n(sv(m, 'cap_min'))} – ${n(sv(m, 'cap_max'), 'pF')}`
+    : `${n(cap.nominal)} ± ${n(cap.tolerance, 'pF')}`;
+
+  box.append(el('div', { class: 'grid3' },
+    el('div', {},
+      el('div', { class: 'sect__t' }, '전기 사양'),
+      el('dl', { class: 'spec' },
+        specRow('내전압 (Peak test)', n(sv(m, 'v_peak_test'), 'kVp') + ' <small>50/60Hz 1분</small>', sb(m, 'v_peak_test')),
+        specRow('RF 사용전압', n(sv(m, 'v_rf_working'), 'kVp'), sb(m, 'v_rf_working')),
+        specRow('최대 전류', n(sv(m, 'i_max'), 'Arms') + ` <small>@${s.max_current_arms?.freq_mhz ?? 13.56}MHz</small>`, sb(m, 'i_max')),
+        specRow('용량', capTxt, cap?.kind === 'range' ? sb(m, 'cap_max') : sb(m, 'cap_min')))),
+    el('div', {},
+      el('div', { class: 'sect__t' }, '기구'),
+      el('dl', { class: 'spec' },
+        specRow('외경', n(sv(m, 'diameter'), 'mm')),
+        specRow('전장', n(s.total_length_mm?.value, 'mm')),
+        specRow('장착 길이', n(s.mounting_length_mm?.value, 'mm')),
+        specRow('중량', n(s.weight_kg?.value, 'kg')),
+        specRow('냉각', m.cooling === 'water'
+          ? '<span class="b b--water">수랭</span>'
+          : '<span style="color:var(--ink-3)">데이터시트 미명시</span>'))),
+    m.kind === 'VVC' ? el('div', {},
+      el('div', { class: 'sect__t' }, '제어 (매처 연동)'),
+      el('dl', { class: 'spec' },
+        specRow('튜너 회전수', s.tuner_turns
+          ? `${n(s.tuner_turns.value)} ± ${n(s.tuner_turns.tolerance, 'Turns')}` : '—'),
+        specRow('회전당 용량 변화', s.linear_variability
+          ? `${n(s.linear_variability.pf_per_turn)} ± ${n(s.linear_variability.tolerance, 'pF/Turn')}` : '—'),
+        specRow('선형 유효 구간', s.linear_variability?.linear_min_pf != null
+          ? `C ≥ ${n(s.linear_variability.linear_min_pf, 'pF')}`
+          : '<span style="color:var(--alarm)">미명시 — 환산 불가</span>'),
+        specRow('조작 토크', s.tuner_torque_nm?.value != null
+          ? n(s.tuner_torque_nm.value, 'Nm')
+          : '<span style="color:var(--ink-3)">데이터시트 미규정</span>'))) : null));
+
+  // ── 출처 대조 (불일치가 있을 때만) ──
+  const dis = m.effective?.disagree ?? [];
+  if (dis.length) {
+    const LABEL = { v_peak_test: '내전압 (kVp)', v_rf_working: 'RF 사용전압 (kVp)',
+      i_max: '최대 전류 (Arms)', cap_min: '용량 하한 (pF)', cap_max: '용량 상한 (pF)' };
+    const sect = el('div', {},
+      el('div', { class: 'sect__t' }, '출처 대조', el('span', { class: 'b b--alarm' }, `${dis.length}개 항목 불일치`)),
+      el('div', { class: 'note note--alarm', html:
+        '제조사 목록 페이지의 값과 제조사 데이터시트의 값이 서로 다릅니다. '
+        + '<b>둘 중 보수적인 값(낮은 정격·좁은 범위)을 채택</b>했습니다. 높은 쪽을 믿으면 정격 미달 부품을 고르게 됩니다. '
+        + '<b>고객 회신에 인용하기 전 제조사 확인이 필요합니다.</b>' }));
+    for (const k of dis) {
+      sect.append(el('div', { style: 'margin:14px 0' },
+        el('div', { class: 'f__label', style: 'margin-bottom:2px' }, LABEL[k] ?? k),
+        dualReadout(k, m.effective[k], '')));
+    }
+    box.append(sect);
+  }
+
+  box.append(renderSubs(m));
+  return box;
+}
+
+// ── 대체품 ────────────────────────────────────────────────────
+function renderSubs(m) {
+  const wrap = el('div', { id: 'subs' },
+    el('div', { class: 'sect__t' }, '대체품 후보'));
+
+  const capMin = el('input', { type: 'number', placeholder: `${sv(m, 'cap_min') ?? ''}`, style: 'width:110px' });
+  const capMax = el('input', { type: 'number', placeholder: `${sv(m, 'cap_max') ?? ''}`, style: 'width:110px' });
+  const out = el('div', {});
+
+  const run = async () => {
+    out.replaceChildren(el('div', { class: 'empty' }, '찾는 중…'));
+    const qs = capMin.value && capMax.value ? `?capMin=${capMin.value}&capMax=${capMax.value}` : '';
+    try {
+      const r = await api(`/api/substitutes/${encodeURIComponent(m.id)}${qs}`);
+      out.replaceChildren(subsResult(m, r));
+    } catch (e) {
+      out.replaceChildren(el('div', { class: 'note note--alarm', html: `후보를 찾지 못했습니다 — ${esc(e.message)}` }));
+    }
+  };
+
+  wrap.append(
+    el('div', { style: 'display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:10px' },
+      el('div', {}, el('div', { class: 'f__label' }, '매처 실제 운전 용량 구간 (pF)'),
+        el('div', { style: 'display:flex;gap:6px;align-items:center' },
+          capMin, el('span', { style: 'font-family:var(--mono);color:var(--ink-3)' }, '~'), capMax)),
+      el('button', { class: 'btn', onclick: run }, '후보 찾기')),
+    el('div', { class: 'note', html:
+      '비워두면 <b>원본의 전 용량 범위</b>를 덮는 모델만 찾습니다. 실제로는 매처가 쓰는 구간만 덮으면 되므로, '
+      + '아는 경우 구간을 넣으면 후보가 늘어납니다.' }),
+    out);
+
+  run();
+  return wrap;
+}
+
+/** 등급별로 마지막 칸에 무엇을 보여줄지 — C는 「무엇이 얼마나 부족한가」, A/B는 「원본과 무엇이 다른가」 */
+function diffCell(g, x) {
+  if (g === 'C') {
+    return x.shortfalls.map(f =>
+      `${esc(f.label)} <b>${f.has}</b> &lt; ${f.need}${esc(f.unit ?? '')}`
+      + ` <span style="color:var(--alarm)">(${f.deficit}% 부족)</span>`
+    ).join('<br>');
+  }
+  if (!x.differences.length) return '—';
+  return x.differences.map(d => {
+    const mark = d.critical ? '<span style="color:var(--alarm)">⚠ </span>' : '';
+    const note = d.note ? `<br><span style="color:var(--ink-3)">${esc(d.note)}</span>` : '';
+    return `${mark}${esc(d.label)} ${esc(String(d.from))} → ${esc(String(d.to))}${note}`;
+  }).join('<br>');
+}
+
+function subRow(g, x) {
+  return el('tr', { onclick: () => openDetail(x.id) },
+    el('td', { class: 'pn' }, x.id,
+      x.has_disagreement ? el('span', { class: 'b b--alarm', style: 'margin-left:5px' }, '불일치') : null),
+    el('td', {}, x.type),
+    el('td', { class: 'num', html: `${n(x.spec.cap_min)}–${n(x.spec.cap_max)}` }),
+    el('td', { class: 'num', html: n(x.spec.v_rf_working, 'kVp') }),
+    el('td', { class: 'num', html: n(x.spec.v_peak_test, 'kVp') }),
+    el('td', { class: 'num', html: n(x.spec.i_max, 'A') }),
+    el('td', { class: 'num', html: n(x.spec.diameter, 'mm') }),
+    el('td', { class: 'num', html: n(x.spec.turns, 'T') }),
+    el('td', { style: 'font-size:11.5px', html: diffCell(g, x) }));
+}
+
+function subsResult(src, r) {
+  const box = el('div', {});
+  box.append(el('div', { class: 'note note--brass', html:
+    '<b>최종 적용 가부는 제조사(Meiden) 확인이 필요합니다.</b> 본 판정은 공개 데이터시트 기준의 후보 제시이며, '
+    + '당사는 대리점·서비스 위치로서 제조사 사양을 넘어선 적합성 보증을 하지 않습니다.' }));
+
+  const summary = el('div', { class: 'count', style: 'border:0;padding:0;margin:12px 0 8px;gap:16px' },
+    gradeChip('A', r.A.length, '완전 호환 후보'),
+    gradeChip('B', r.B.length, '전기적 대체 가능'),
+    gradeChip('C', r.C.length, '용량 범위 부족'),
+    el('span', { style: 'color:var(--ink-3);font-size:11.5px' },
+      `정격 미달로 제외 ${r.excluded_by_rating}개`
+      + (r.required_cap ? ` · 요구 구간 ${r.required_cap.min}–${r.required_cap.max}pF` : ' · 원본 전 범위 요구')));
+  box.append(summary);
+
+  const G = [
+    ['A', r.A, '전기·기구·제어·냉각이 모두 맞습니다. 그대로 교체 검토 가능합니다.'],
+    ['B', r.B, '전기 정격은 충족하나 기구·제어·냉각에 차이가 있습니다. 아래 차이 항목을 확인하세요.'],
+    ['C', r.C, '정격은 충족하나 용량 범위가 원본/요구 구간을 다 덮지 못합니다.'],
+  ];
+  const TITLE = { A: '완전 호환 후보', B: '전기적 대체 가능', C: '참고 — 용량 범위 부족' };
+  const HEAD  = ['품번', '타입', '용량 pF', 'RF전압', '내전압', '전류', '외경', '튜너'];
+
+  let any = false;
+  for (const [g, list, desc] of G) {
+    if (!list.length) continue;
+    any = true;
+    box.append(
+      el('div', { class: 'sect__t', style: 'margin-top:18px' },
+        el('span', { class: `grade grade--${g}` }, g),
+        TITLE[g],
+        el('span', { class: 'sect__desc' }, desc)),
+      el('div', { class: 'tw' }, el('table', {},
+        el('thead', {}, el('tr', {}, HEAD.concat(g === 'C' ? '부족한 항목' : '원본과의 차이').map(t => el('th', {}, t)))),
+        el('tbody', {}, list.map(x => subRow(g, x))))));
+  }
+
+  if (!any) box.append(el('div', { class: 'empty',
+    html: '<b>후보가 없습니다</b>정격을 충족하면서 용량을 덮는 모델이 이 목록에 없습니다.<br>운전 구간을 지정하면 후보가 생길 수 있습니다.' }));
+
+  if (r.truncated.B || r.truncated.C) box.append(el('div', { class: 'note note--warn', html:
+    `표시하지 않은 후보가 있습니다 — B ${r.truncated.B}개, C ${r.truncated.C}개. 조건을 좁혀 다시 확인하세요.` }));
+  return box;
+}
+
+const gradeChip = (g, cnt, label) => el('span', { style: 'display:inline-flex;gap:6px;align-items:baseline' },
+  el('span', { class: `grade grade--${g}` }, g),
+  el('b', { style: 'font-family:var(--mono);font-size:17px' }, String(cnt)),
+  el('span', { style: 'font-size:11.5px;color:var(--ink-3)' }, label));
+
+// ── 출처 각주 ─────────────────────────────────────────────────
+function footNote() {
+  const src = DB.meta?.source ?? {};
+  const items = [];
+  if (sel?.doc_no) items.push(`MEIDENSHA CORPORATION, <span class="mono">Data Sheet ${esc(sel.id)}</span> (문서번호 <span class="mono">${esc(sel.doc_no)}</span>) — <a href="${esc(sel.pdf?.url ?? '#')}" target="_blank" rel="noopener">원문</a>, 조회일 ${dateKo(DB.meta?.generated_at)}`);
+  items.push(`MEIDENSHA CORPORATION, Variable Vacuum Capacitors 제품 목록 — <a href="${esc(src.VVC?.url ?? '')}" target="_blank" rel="noopener">${esc(src.VVC?.url ?? '')}</a> (서버 최종수정 ${esc(src.VVC?.last_modified ?? '미제공')}, 조회일 ${dateKo(DB.meta?.generated_at)})`);
+  items.push(`MEIDENSHA CORPORATION, Fixed Vacuum Capacitors 제품 목록 — <a href="${esc(src.VFC?.url ?? '')}" target="_blank" rel="noopener">${esc(src.VFC?.url ?? '')}</a> (서버 최종수정 ${esc(src.VFC?.last_modified ?? '미제공')})`);
+  if (src.catalog) items.push(`MEIDENSHA CORPORATION, ${esc(src.catalog.title)} (<span class="mono">${esc(src.catalog.doc)}</span>) — <a href="${esc(src.catalog.url)}" target="_blank" rel="noopener">${esc(src.catalog.url)}</a>`);
+
+  return el('div', { class: 'src-foot' },
+    el('h4', {}, '출처'),
+    el('ol', { html: items.map(t => `<li>${t}</li>`).join('') }),
+    el('p', { style: 'margin-top:9px', html:
+      '본 화면의 수치는 제조사 공개 자료를 당사가 수집·정리한 것입니다. 목록과 데이터시트가 어긋난 항목은 '
+      + '보수적인 값을 채택하고 화면에 표시했습니다. <b>고객 제출 문서에 인용할 때는 데이터시트 원문을 함께 확인하십시오.</b>' }));
+}
+
+// ── 초기 적재 ─────────────────────────────────────────────────
+// 【주의】 이 호출은 반드시 모듈 맨 아래에 둔다.
+//   위쪽에 두면 아래에서 const 로 선언한 COLS 등이 아직 초기화 전이라
+//   "Cannot access 'COLS' before initialization" 으로 화면이 통째로 빈다.
+try {
+  DB = await api('/api/index');
+  render();
+} catch (e) {
+  document.body.innerHTML =
+    '<div class="empty"><b>데이터를 불러오지 못했습니다</b>'
+    + '서버가 떠 있는지, <code>npm run sync</code> 를 먼저 실행했는지 확인하세요.<br>'
+    + '<span style="font-family:var(--mono);font-size:11px">' + String(e.message) + '</span></div>';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>데이터 품질 · RF Helpdesk</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .wrap{max-width:1180px; margin:0 auto}
+  .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:1px;
+    background:var(--rule); border:1px solid var(--rule); border-radius:var(--r); overflow:hidden; margin-bottom:20px}
+  .stat{background:var(--panel); padding:13px 14px}
+  .stat b{display:block; font-family:var(--mono); font-size:25px; font-weight:600; letter-spacing:-.02em; line-height:1.15}
+  .stat span{font-size:11px; color:var(--ink-3)}
+  .stat--alarm b{color:var(--alarm)}
+  .stat--warn b{color:var(--warn)}
+  .delta{font-family:var(--mono); font-size:11.5px}
+  .delta i{font-style:normal; color:var(--ink-3)}
+  .delta b{color:var(--alarm)}
+  .delta .ad{color:var(--brass); font-weight:700}
+  @media print{ .rail,.noprint{display:none} body{background:#fff} .wrap{max-width:none} }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { $, el, n, api, esc, dateKo, renderRail } from './app.js';
+
+const app = $('#app');
+const [idx, rep] = await Promise.all([api('/api/index'), api('/api/report')]);
+const meta = idx.meta, s = meta.summary, byId = new Map(idx.models.map(m => [m.id, m]));
+
+const LABEL = { v_peak_test: '내전압', v_rf_working: 'RF 사용전압', i_max: '최대 전류',
+  cap_min: '용량 하한', cap_max: '용량 상한', cap_nominal: '용량', diameter: '외경' };
+const UNIT = { v_peak_test: 'kVp', v_rf_working: 'kVp', i_max: 'Arms',
+  cap_min: 'pF', cap_max: 'pF', cap_nominal: 'pF', diameter: 'mm' };
+
+// 대조 항목 → 서버가 확정한 유효값의 키 (진실은 서버 effective 한 곳에만 둔다)
+const ADOPT_KEY = { v_peak_test: 'v_pk', v_rf_working: 'v_rf', i_max: 'i_max',
+  cap_min: 'cap_min', cap_max: 'cap_max', cap_nominal: 'cap_min', diameter: 'dia' };
+
+const stat = (v, label, kind = '') => el('div', { class: `stat ${kind ? `stat--${kind}` : ''}` },
+  el('b', {}, String(v)), el('span', {}, label));
+
+app.replaceChildren(
+  renderRail('quality.html', `수집 ${dateKo(meta.generated_at)}`),
+  el('main', { class: 'main' }, el('div', { class: 'wrap' },
+    el('div', { class: 'count' },
+      el('b', {}, '데이터 품질'),
+      el('span', {}, `제조사 공개 자료를 수집·대조한 결과 · ${dateKo(meta.generated_at)} 기준`)),
+
+    el('div', { class: 'stats' },
+      stat(s.total, '전체 모델'),
+      stat(s.extracted, '데이터시트 추출 성공'),
+      stat(s.extract_missing, '추출 누락', s.extract_missing ? 'alarm' : ''),
+      stat(s.mismatch, '목록 ↔ 데이터시트 불일치', 'alarm'),
+      stat(s.partno_mismatch ?? 0, '품번 링크 오류', 'alarm'),
+      stat(s.no_datasheet, '데이터시트 없음', 'warn'),
+      stat(s.water_cooled, '수랭식')),
+
+    el('div', { class: 'note note--brass', html:
+      '<b>이 화면은 당사가 제조사 공개 자료를 전수 대조해 만든 것입니다.</b> '
+      + `제조사 목록 페이지의 값과 제조사 데이터시트(PDF)의 값이 서로 다른 항목이 <b>${s.mismatch}건</b> 있습니다. `
+      + '당사는 <b>둘 중 보수적인 값(낮은 정격·좁은 범위)</b>을 채택해 조회·대체품 판정에 사용합니다. '
+      + '높은 쪽을 믿으면 정격이 모자란 부품을 고르게 되기 때문입니다. '
+      + '<b>아래 항목은 제조사 확인 전까지 고객 제출 문서에 인용하지 마십시오.</b>' }),
+
+    // ── 품번 링크 오류 ──
+    ...(rep.partno_mismatch?.length ? [
+      el('div', { class: 'sect__t' }, '품번 링크 오류',
+        el('span', { class: 'b b--alarm' }, `${rep.partno_mismatch.length}건`),
+        el('span', { class: 'sect__desc' }, '목록의 행이 다른 품번의 데이터시트를 가리킵니다. 스펙 차이보다 심각합니다.')),
+      el('div', { class: 'tw' }, el('table', {},
+        el('thead', {}, el('tr', {}, ['목록 품번', '데이터시트 표지 품번', '파일'].map(t => el('th', {}, t)))),
+        el('tbody', {}, rep.partno_mismatch.map(x => el('tr', {},
+          el('td', { class: 'pn' }, x.list_part_no),
+          el('td', { class: 'pn', style: 'color:var(--alarm)' }, x.pdf_part_no),
+          el('td', { style: 'font-family:var(--mono);font-size:10.5px' },
+            el('a', { href: '/' + x.pdf, target: '_blank', rel: 'noopener' }, x.pdf.split('/').pop())))))))
+    ] : []),
+
+    // ── 값 불일치 ──
+    el('div', { class: 'sect__t', style: 'margin-top:26px' }, '목록 ↔ 데이터시트 값 불일치',
+      el('span', { class: 'b b--alarm' }, `${rep.mismatched.length}건`),
+      el('span', { class: 'sect__desc' }, '같은 제조사의 두 자료가 서로 다른 값을 말합니다.')),
+    el('div', { class: 'tw' }, el('table', {},
+      el('thead', {}, el('tr', {}, ['품번', '타입', '항목', '목록 값', '데이터시트 값', '차이', '당사 채택'].map(t => el('th', {}, t)))),
+      el('tbody', {}, rep.mismatched.flatMap(m =>
+        m.checks.map((c, i) => {
+          const mm = byId.get(m.id);
+          const diff = c.list && c.pdf ? ((Math.abs(c.pdf - c.list) / Math.min(c.list, c.pdf)) * 100) : null;
+          // 채택값은 화면에서 다시 계산하지 않는다. 규칙이 두 곳에 있으면 언젠가 갈라진다.
+          // 서버가 effective(보수적 유효값)로 이미 정한 값을 그대로 읽는다.
+          const adopt = mm ? mm[ADOPT_KEY[c.field]] : null;
+          return el('tr', {},
+            i === 0 ? el('td', { class: 'pn', rowspan: m.checks.length },
+              el('a', { href: `parts.html#${encodeURIComponent(m.id)}` }, m.id)) : null,
+            i === 0 ? el('td', { rowspan: m.checks.length, style: 'font-size:11.5px' }, m.type ?? mm?.type ?? '') : null,
+            el('td', {}, LABEL[c.field] ?? c.field),
+            el('td', { class: 'num', html: n(c.list, UNIT[c.field]) }),
+            el('td', { class: 'num', html: n(c.pdf, UNIT[c.field]) }),
+            el('td', { class: 'num', html: diff == null ? '—'
+              : `<b style="color:var(--alarm)">${diff.toFixed(0)}%</b>` }),
+            el('td', { class: 'num', html: `<span class="ad" style="color:var(--brass);font-weight:700">${n(adopt, UNIT[c.field])}</span>` }));
+        }).filter(Boolean))))),
+
+    // ── 데이터시트 없음 ──
+    el('div', { class: 'sect__t', style: 'margin-top:26px' }, '데이터시트가 없는 모델',
+      el('span', { class: 'b b--warn' }, `${s.no_datasheet}건`),
+      el('span', { class: 'sect__desc' }, '목록에는 있으나 제조사가 PDF를 붙이지 않았습니다. 정비용 스펙(회전수·토크 등)을 확인할 수 없습니다.')),
+    el('div', { class: 'tw' }, el('table', {},
+      el('thead', {}, el('tr', {}, ['품번', '타입', '시리즈', '목록 스펙'].map(t => el('th', {}, t)))),
+      el('tbody', {}, idx.models.filter(m => m.flags.includes('no_datasheet')).map(m => el('tr', {},
+        el('td', { class: 'pn' }, m.id), el('td', {}, m.type), el('td', {}, m.series),
+        el('td', { class: 'num', style: 'text-align:left',
+          html: `${n(m.cap_min)}–${n(m.cap_max, 'pF')} · ${n(m.v_pk, 'kVp')} · ${n(m.i_max, 'A')} · φ${n(m.dia, 'mm')}` })))))),
+
+    // ── 수랭 ──
+    el('div', { class: 'sect__t', style: 'margin-top:26px' }, '수랭식 모델',
+      el('span', { class: 'b b--water' }, `${s.water_cooled}건`),
+      el('span', { class: 'sect__desc' }, '공랭식과 그대로 교차 교체할 수 없습니다. 대체품 판정에서 자동으로 분리합니다.')),
+    el('div', { class: 'tw' }, el('table', {},
+      el('thead', {}, el('tr', {}, ['품번', '타입', '시리즈', '외경'].map(t => el('th', {}, t)))),
+      el('tbody', {}, idx.models.filter(m => m.cooling === 'water').map(m => el('tr', {},
+        el('td', { class: 'pn' }, m.id), el('td', {}, m.type), el('td', {}, m.series),
+        el('td', { class: 'num', html: n(m.dia, 'mm') })))))),
+
+    el('div', { class: 'note', style: 'margin-top:26px', html:
+      '<b>수집을 갱신하려면</b> 서버에서 <code>npm run sync</code> 를 실행하십시오. '
+      + '제조사 목록과 데이터시트를 다시 받아 대조하고, 신규·변경·불일치를 리포트로 남깁니다.' }),
+
+    el('div', { class: 'src-foot' },
+      el('h4', {}, '출처'),
+      el('ol', { html: [
+        `MEIDENSHA CORPORATION, Variable Vacuum Capacitors 목록 — <a href="${esc(meta.source.VVC.url)}" target="_blank" rel="noopener" class="mono">${esc(meta.source.VVC.url)}</a> (서버 최종수정 ${esc(meta.source.VVC.last_modified ?? '미제공')})`,
+        `MEIDENSHA CORPORATION, Fixed Vacuum Capacitors 목록 — <a href="${esc(meta.source.VFC.url)}" target="_blank" rel="noopener" class="mono">${esc(meta.source.VFC.url)}</a> (서버 최종수정 ${esc(meta.source.VFC.last_modified ?? '미제공')})`,
+        `MEIDENSHA CORPORATION, 모델별 Data Sheet PDF ${s.extracted}건 — 각 모델 상세 화면의 「데이터시트 원문」 링크 참조`,
+        `MEIDENSHA CORPORATION, ${esc(meta.source.catalog.title)} (<span class="mono">${esc(meta.source.catalog.doc)}</span>) — <a href="${esc(meta.source.catalog.url)}" target="_blank" rel="noopener">${esc(meta.source.catalog.url)}</a>`,
+        `당사 수집·대조 일시 ${esc(meta.generated_at)}`,
+      ].map(t => `<li>${t}</li>`).join('') }),
+      el('p', { style: 'margin-top:9px' },
+        '본 대조는 제조사가 공개한 자료 사이의 차이를 기계적으로 확인한 것이며, 어느 쪽이 옳은지에 대한 당사의 판단이 아닙니다. 정확한 사양은 제조사 확인이 필요합니다.'))))
+);
+</script>
+</body>
+</html>

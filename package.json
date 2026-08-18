@@ -1,0 +1,16 @@
+{
+  "name": "rf-helpdesk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "RF Generator/Matcher 이슈 대응 지식베이스 (사내 전용)",
+  "scripts": {
+    "start": "node server.mjs",
+    "sync": "node tools/sync-meiden.mjs",
+    "verify": "node tools/verify-extract.mjs"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.2.108"
+  },
+  "engines": { "node": ">=20" }
+}

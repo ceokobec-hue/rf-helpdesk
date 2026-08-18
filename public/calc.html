@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>계산기 · RF Helpdesk</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .calcs{display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:16px; margin-top:16px}
+  .card{background:var(--panel); border:1px solid var(--rule); border-radius:var(--r); padding:15px}
+  .card h3{
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink-2); margin:0 0 3px; font-weight:500;
+  }
+  .card .why{font-size:11.5px; color:var(--ink-3); margin:0 0 12px; line-height:1.5}
+  .out{
+    margin-top:13px; padding:12px; border-radius:var(--r);
+    background:var(--paper-2); border-left:3px solid var(--rule);
+  }
+  .out--ok{border-left-color:var(--ok); background:var(--ok-bg)}
+  .out--warn{border-left-color:var(--warn); background:var(--warn-bg)}
+  .out--alarm{border-left-color:var(--alarm); background:var(--alarm-bg)}
+  .out__big{font-family:var(--mono); font-size:23px; font-weight:700; letter-spacing:-.02em; line-height:1.2}
+  .out__big small{font-size:13px; font-weight:400; color:var(--ink-3); margin-left:3px}
+  .out__sub{font-size:12px; color:var(--ink-2); margin-top:5px; line-height:1.55}
+  .basis{
+    margin-top:9px; padding-top:8px; border-top:1px dashed var(--rule);
+    font-family:var(--mono); font-size:10.5px; color:var(--ink-3); line-height:1.6;
+  }
+  .gauge{position:relative; height:22px; background:var(--paper-2); border:1px solid var(--rule); border-radius:2px; margin:9px 0 6px; overflow:hidden}
+  .gauge__fill{position:absolute; inset:0 auto 0 0; width:var(--w); background:var(--signal); opacity:.28}
+  .gauge__end{position:absolute; top:0; bottom:0; left:90%; right:0; background:repeating-linear-gradient(-45deg, color-mix(in srgb,var(--alarm) 24%,transparent) 0 3px, transparent 3px 6px)}
+  .gauge__mark{position:absolute; top:-2px; bottom:-2px; left:var(--p); width:2px; background:var(--brass)}
+  .gauge__t{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { $, el, n, api, esc, dateKo, renderRail, toast } from './app.js';
+
+const app = $('#app');
+let DB = null, M = null;      // M = 선택된 모델 (전체 레코드)
+
+// ── 화면 ──────────────────────────────────────────────────────
+function render() {
+  app.replaceChildren(
+    renderRail('calc.html', `수집 ${dateKo(DB?.meta?.generated_at)} · 모델 ${DB?.meta?.summary?.total ?? '—'}`),
+    el('main', { class: 'main', style: 'max-width:1180px;margin:0 auto' },
+      el('div', { class: 'count' },
+        el('b', {}, '계산기'),
+        el('span', {}, '데이터시트 값으로 현장 판단을 돕습니다')),
+      picker(),
+      M ? calcs() : el('div', { class: 'empty', html: '<b>모델을 먼저 고르세요</b>품번을 입력하면 그 모델의 데이터시트 값으로 계산합니다.' }),
+      scopeNote()));
+}
+
+function picker() {
+  const list = el('datalist', { id: 'models' },
+    DB.models.map(m => el('option', { value: m.id }, `${m.type} · ${m.series}`)));
+  const inp = el('input', {
+    type: 'text', list: 'models', placeholder: '품번 입력 — 예: SCV-540P110W',
+    value: M?.id ?? '', style: 'max-width:420px',
+    onchange: e => load(e.target.value.trim()),
+  });
+  return el('div', { style: 'display:flex;gap:9px;align-items:center;flex-wrap:wrap' },
+    list, inp,
+    M ? el('span', { class: 'detail__sub', html:
+      `${esc(M.type)} · ${esc(M.series)} · ${M.kind === 'VVC' ? '가변형' : '고정형'}`
+      + (M.pdf ? ` · <a href="/${esc(M.pdf.file)}" target="_blank" rel="noopener">데이터시트 원문</a>` : '') }) : null);
+}
+
+async function load(id) {
+  if (!id) return;
+  try { M = await api(`/api/model/${encodeURIComponent(id)}`); render(); }
+  catch { toast(`품번 "${id}" 을(를) 찾지 못했습니다`, 'err'); }
+}
+
+const V = k => M.effective?.[k]?.value ?? null;
+
+// ── 계산기 4종 ────────────────────────────────────────────────
+function calcs() {
+  const s = M.spec ?? {};
+  const box = el('div', { class: 'calcs' });
+
+  if (M.kind === 'VVC' && s.tuner_turns) box.append(cardPosition(s));
+  if (M.kind === 'VVC' && s.linear_variability) box.append(cardDelta(s));
+  box.append(cardVoltage(s), cardCurrent(s));
+  return box;
+}
+
+/* ① 포지션 위치 판정 — 기울기가 필요 없다. 총 회전수만으로 정확하다. */
+function cardPosition(s) {
+  const T = s.tuner_turns.value;
+  const out = el('div', { class: 'out' });
+  const inp = el('input', { type: 'number', min: 0, max: 100, step: 0.1, placeholder: '예: 85' });
+
+  const calc = () => {
+    const p = Number(inp.value);
+    if (!Number.isFinite(p) || p < 0 || p > 100) {
+      out.className = 'out';
+      out.replaceChildren(el('div', { class: 'out__sub' }, '0 ~ 100 사이 값을 넣으세요.'));
+      return;
+    }
+    const used = (p / 100) * T, left = T - used;
+    const end = p >= 90, near = p >= 80 || p <= 10;
+    out.className = `out ${end ? 'out--alarm' : near ? 'out--warn' : 'out--ok'}`;
+    out.replaceChildren(
+      el('div', { class: 'gauge' },
+        el('div', { class: 'gauge__fill', style: `--w:${p}%` }),
+        el('div', { class: 'gauge__end' }),
+        el('div', { class: 'gauge__mark', style: `--p:${p}%` })),
+      el('div', { class: 'gauge__t', html: '<span>0% 최소용량</span><span>90%</span><span>100% 최대용량</span>' }),
+      el('div', { class: 'out__big', html: `${used.toFixed(2)}<small>회전 사용</small>` }),
+      el('div', { class: 'out__sub', html:
+        `남은 여유 <b>${left.toFixed(2)}</b> 회전 (전체 ${T} 회전)<br>`
+        + (end
+          ? '<b>튜닝 범위 끝에 근접했습니다.</b> 이 상태에서는 부하가 조금만 변해도 매칭이 풀립니다. '
+            + '로드/튠 분배 재조정, 고정 커패시터 값 변경, 또는 용량 범위가 더 넓은 모델 검토가 필요합니다.'
+          : near
+            ? '한쪽 끝에 치우쳐 있습니다. 공정 조건이 바뀌면 범위를 벗어날 수 있습니다.'
+            : '가운데 구간입니다. 양방향 여유가 있습니다.') }),
+      el('div', { class: 'basis', html:
+        `근거 · Tuner Turns ${s.tuner_turns.value} ± ${s.tuner_turns.tolerance ?? '—'} Turns`
+        + `<br>${esc(M.doc_no ?? '')} — 이 계산은 총 회전수만 쓰므로 기울기 오차가 없습니다.` }));
+  };
+  inp.addEventListener('input', calc);
+
+  return el('div', { class: 'card' },
+    el('h3', {}, '① 매칭 포지션 위치 판정'),
+    el('p', { class: 'why' }, '고객이 말한 포지션 %가 튜닝 범위의 어디인지, 끝에 몰렸는지 봅니다.'),
+    el('div', { class: 'f__label' }, '매칭 포지션 (%)'), inp, out);
+}
+
+/* ② 회전량 → 용량 변화량. 기울기는 「변화량」에만 쓴다 (절대값 아님). */
+function cardDelta(s) {
+  const lv = s.linear_variability, T = s.tuner_turns?.value ?? null;
+  const out = el('div', { class: 'out' });
+  const turnsIn = el('input', { type: 'number', step: 0.1, placeholder: '예: 1.5' });
+  const curIn = el('input', { type: 'number', step: 1, placeholder: '예: 800' });
+
+  const calc = () => {
+    const dT = Number(turnsIn.value), cur = Number(curIn.value);
+    if (!Number.isFinite(dT) || dT === 0) {
+      out.className = 'out';
+      out.replaceChildren(el('div', { class: 'out__sub' }, '회전량을 넣으세요.'));
+      return;
+    }
+    const lim = lv.linear_min_pf;
+    // 【R3】 선형 유효구간 밖에서는 계산하지 않는다. 숫자 대신 안내를 낸다.
+    if (lim == null) {
+      out.className = 'out out--alarm';
+      out.replaceChildren(el('div', { class: 'out__sub', html:
+        '<b>이 모델은 선형 유효구간이 데이터시트에 명시돼 있지 않습니다.</b><br>환산하지 않습니다. 데이터시트의 곡선을 직접 보십시오.' }));
+      return;
+    }
+    if (Number.isFinite(cur) && cur > 0 && cur < lim) {
+      out.className = 'out out--alarm';
+      out.replaceChildren(el('div', { class: 'out__sub', html:
+        `<b>비선형 구간입니다 — 환산하지 않습니다.</b><br>`
+        + `현재 용량 ${cur} pF 는 이 모델의 선형 유효 하한 <b>${lim} pF</b> 미만입니다. `
+        + `이 구간에서 회전당 변화량은 일정하지 않아 계산이 틀립니다. 데이터시트 곡선을 참조하십시오.` }));
+      return;
+    }
+    const d = lv.pf_per_turn * dT;
+    const tol = (lv.tolerance ?? 0) * Math.abs(dT);
+    out.className = 'out out--ok';
+    out.replaceChildren(
+      el('div', { class: 'out__big', html: `${d > 0 ? '+' : ''}${d.toFixed(1)}<small>pF</small>` }),
+      el('div', { class: 'out__sub', html:
+        (tol ? `공차 포함 <b>${(d - tol).toFixed(1)} ~ ${(d + tol).toFixed(1)} pF</b><br>` : '')
+        + (T ? `포지션 1% 당 약 <b>${(lv.pf_per_turn * T / 100).toFixed(1)} pF</b> 변합니다.` : '') }),
+      el('div', { class: 'basis', html:
+        `근거 · Linear Variability ${lv.pf_per_turn} ± ${lv.tolerance ?? '—'} pF/Turn (C ≥ ${lim} pF)`
+        + `<br>${esc(M.doc_no ?? '')} — 유효구간 안에서의 <b>변화량</b>만 계산합니다.` }));
+  };
+  turnsIn.addEventListener('input', calc); curIn.addEventListener('input', calc);
+
+  return el('div', { class: 'card' },
+    el('h3', {}, '② 회전량 → 용량 변화량'),
+    el('p', { class: 'why' }, '튜너를 몇 회전 돌리면 용량이 얼마나 바뀌는지. 선형 유효구간 안에서만 계산합니다.'),
+    el('div', { class: 'f__label' }, '현재 용량 (pF) — 유효구간 확인용'), curIn,
+    el('div', { class: 'f__label', style: 'margin-top:9px' }, '회전량 (Turns · 음수 가능)'), turnsIn, out);
+}
+
+/* ③ 전압 마진 */
+function cardVoltage(s) {
+  const rf = V('v_rf_working'), pk = V('v_peak_test');
+  const out = el('div', { class: 'out' });
+  const inp = el('input', { type: 'number', step: 0.1, placeholder: '예: 2.4' });
+  const calc = () => {
+    const v = Number(inp.value);
+    if (!Number.isFinite(v) || v <= 0 || rf == null) {
+      out.className = 'out'; out.replaceChildren(el('div', { class: 'out__sub' }, '측정된 RF 전압을 넣으세요.')); return;
+    }
+    const use = (v / rf) * 100;
+    const lv = use > 100 ? 'alarm' : use > 80 ? 'warn' : 'ok';
+    out.className = `out out--${lv}`;
+    out.replaceChildren(
+      el('div', { class: 'out__big', html: `${use.toFixed(1)}<small>% · 정격 대비</small>` }),
+      el('div', { class: 'out__sub', html:
+        `여유 <b>${(rf - v).toFixed(2)} kVp</b> (정격 ${rf} kVp)<br>`
+        + (use > 100
+          ? '<b>정격 초과입니다.</b> 진공 커패시터의 내부 절연이 버티는 한계를 넘었습니다. 아크·소손 위험이 있으니 즉시 출력 또는 매칭 조건을 재검토하십시오.'
+          : use > 80
+            ? '정격의 80%를 넘었습니다. 공정 변동 시 초과할 수 있어 여유가 부족합니다.'
+            : '여유가 있습니다.') }),
+      el('div', { class: 'basis', html:
+        `근거 · RF Working Voltage ${rf} kVp · Peak test ${pk ?? '—'} kVp (50/60Hz 1분)`
+        + `<br><b>13.56 MHz 기준입니다.</b> 다른 주파수의 허용 전압은 데이터시트의 주파수–전압 곡선을 보십시오 (곡선은 수치로 제공되지 않습니다).` }));
+  };
+  inp.addEventListener('input', calc);
+  return el('div', { class: 'card' },
+    el('h3', {}, '③ 전압 마진 (아크 위험도)'),
+    el('p', { class: 'why' }, '인가된 RF 전압이 이 부품의 정격에서 얼마나 여유가 있는지.'),
+    el('div', { class: 'f__label' }, '측정 RF 전압 (kVp)'), inp, out);
+}
+
+/* ④ 전류 마진 */
+function cardCurrent(s) {
+  const im = V('i_max'), f = s.max_current_arms?.freq_mhz ?? 13.56;
+  const out = el('div', { class: 'out' });
+  const inp = el('input', { type: 'number', step: 1, placeholder: '예: 120' });
+  const calc = () => {
+    const a = Number(inp.value);
+    if (!Number.isFinite(a) || a <= 0 || im == null) {
+      out.className = 'out'; out.replaceChildren(el('div', { class: 'out__sub' }, '측정된 RF 전류를 넣으세요.')); return;
+    }
+    const use = (a / im) * 100;
+    const lv = use > 100 ? 'alarm' : use > 80 ? 'warn' : 'ok';
+    out.className = `out out--${lv}`;
+    const dis = M.effective?.i_max?.disagree;
+    out.replaceChildren(
+      el('div', { class: 'out__big', html: `${use.toFixed(1)}<small>% · 정격 대비</small>` }),
+      el('div', { class: 'out__sub', html:
+        `여유 <b>${(im - a).toFixed(0)} Arms</b> (정격 ${im} Arms)<br>`
+        + (use > 100
+          ? '<b>정격 초과입니다.</b> 전극·벨로우즈 발열로 이어져 진공도 저하와 내부 아크를 부릅니다. 즉시 조건을 낮추십시오.'
+          : use > 80 ? '정격의 80%를 넘었습니다. 발열 누적에 유의하십시오.' : '여유가 있습니다.') }),
+      el('div', { class: 'basis', html:
+        `근거 · Maximum Current ${im} Arms @ ${f} MHz`
+        + (dis ? `<br><span style="color:var(--alarm)">이 값은 목록(${M.effective.i_max.list})과 데이터시트(${M.effective.i_max.pdf})가 달라 낮은 쪽을 채택했습니다.</span>` : '')
+        + `<br><b>${f} MHz 기준입니다.</b> 다른 주파수는 데이터시트의 주파수–전류 곡선을 보십시오.` }));
+  };
+  inp.addEventListener('input', calc);
+  return el('div', { class: 'card' },
+    el('h3', {}, '④ 전류 마진 (발열 위험도)'),
+    el('p', { class: 'why' }, '흐르는 RF 전류가 이 부품의 정격에서 얼마나 여유가 있는지.'),
+    el('div', { class: 'f__label' }, '측정 RF 전류 (Arms)'), inp, out);
+}
+
+// ── 이 계산기가 하지 않는 것 (기술적 정직성) ────────────────
+function scopeNote() {
+  return el('div', { class: 'src-foot' },
+    el('h4', {}, '이 계산기가 하지 않는 것'),
+    el('div', { class: 'note note--warn', html:
+      '<b>포지션(%)을 절대 용량(pF)으로 바로 바꿔주지 않습니다.</b> 데이터시트가 그 계산을 뒷받침하지 않기 때문입니다.<br>'
+      + '데이터시트의 <code>Linear Variability</code>(회전당 용량 변화)를 전 구간에 곱하면 용량 범위와 맞지 않습니다. '
+      + '보유한 가변형 125개 전부를 대조한 결과 <b>「회전당 변화 × 총 회전수」가 「용량 범위」의 1.05 ~ 2.72배</b>(중앙값 1.15배)로 나왔고, '
+      + '일치하는 모델은 <b>0개</b>였습니다. 저용량 구간이 비선형이기 때문이며, 데이터시트도 '
+      + '<code>(C ≧ N pF)</code> 라는 유효 하한을 붙여 그 사실을 밝히고 있습니다.<br>'
+      + '그래서 이 계산기는 <b>유효구간 안에서의 변화량</b>과 <b>회전수 기반 위치 판정</b>만 제공합니다. '
+      + '절대 용량이 필요하면 데이터시트의 용량–회전 곡선을 직접 읽으십시오.' }),
+    el('div', { class: 'note note--warn', html:
+      '<b>주파수별 허용 전압·전류 곡선은 수치로 제공하지 않습니다.</b> 데이터시트에 그래프로만 실려 있어 값을 읽어낼 수 없습니다. '
+      + '모든 마진 계산은 <b>13.56 MHz 정격</b> 기준이며, 다른 주파수에서는 데이터시트 곡선을 확인해야 합니다.' }));
+}
+
+// ── 시작 ─────────────────────────────────────────────────────
+try {
+  DB = await api('/api/index');
+  render();
+  const q = new URLSearchParams(location.search).get('model');
+  if (q) await load(q);
+} catch (e) {
+  document.body.innerHTML = `<div class="empty"><b>데이터를 불러오지 못했습니다</b>${String(e.message)}</div>`;
+}
+</script>
+</body>
+</html>
