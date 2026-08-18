@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>부품 조회 · RF Helpdesk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%2315201C'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%239C6318' stroke-width='2.5'/%3E%3Cpath d='M16 4v6M16 22v6' stroke='%239C6318' stroke-width='2.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -402,6 +403,13 @@ function footNote() {
 try {
   DB = await api('/api/index');
   render();
+  // 다른 화면에서 parts.html#품번 으로 넘어오면 그 모델을 바로 연다
+  const hash = decodeURIComponent(location.hash.slice(1));
+  if (hash) { F.q = hash; await openDetail(hash); }
+  window.addEventListener('hashchange', () => {
+    const h = decodeURIComponent(location.hash.slice(1));
+    if (h) { F.q = h; openDetail(h); }
+  });
 } catch (e) {
   document.body.innerHTML =
     '<div class="empty"><b>데이터를 불러오지 못했습니다</b>'
