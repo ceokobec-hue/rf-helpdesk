@@ -1,0 +1,41 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────
+# 커밋 전 안전장치 — 공개 저장소이므로 실수 한 번이 곧 유출이다.
+#
+# .gitignore 는 "실수로 add 하지 않으면" 막아준다. 그러나
+#   git add -f / git add data/파일 / IDE의 강제 스테이징
+# 으로는 뚫린다. 이 훅은 그 마지막 구멍을 막는다.
+#
+# 켜기:  git config core.hooksPath .githooks      (클론 후 1회)
+# ─────────────────────────────────────────────────────────────
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# ① 고객 데이터·데이터시트 원본은 절대 올리지 않는다
+blocked=$(printf '%s\n' "$staged" | grep -E '^(data/|datasheets/)' || true)
+if [ -n "$blocked" ]; then
+  echo "⛔ 커밋을 막았습니다 — 공개 저장소에 올리면 안 되는 경로입니다."
+  echo ""
+  printf '%s\n' "$blocked" | sed 's/^/     /'
+  echo ""
+  echo "   data/       고객사 이슈 이력·사례 기록이 쌓이는 곳입니다 (NDA 대상)."
+  echo "   datasheets/ 제조사 데이터시트 원본 사본입니다 (재배포 대상 아님)."
+  echo ""
+  echo "   해제:  git restore --staged <경로>"
+  fail=1
+fi
+
+# ② 비밀정보로 보이는 것
+for f in $staged; do
+  [ -f "$f" ] || continue
+  case "$f" in .githooks/*) continue ;; esac
+  if git show ":$f" 2>/dev/null | grep -qE '(BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})'; then
+    echo "⛔ 커밋을 막았습니다 — 비밀키로 보이는 값이 있습니다: $f"
+    fail=1
+  fi
+done
+
+[ "$fail" -eq 0 ] || { echo ""; echo "   정말 올려야 한다면: git commit --no-verify (권장하지 않습니다)"; exit 1; }
+exit 0
